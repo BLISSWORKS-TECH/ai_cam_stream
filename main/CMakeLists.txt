@@ -1,0 +1,24 @@
+idf_component_register(
+    SRCS
+        "app_main.cpp"
+        "camera_stream.cpp"
+        "espnow_protocol.cpp"
+        "motor_bridge.cpp"
+        "ota_server.cpp"
+        "status_led.cpp"
+    INCLUDE_DIRS "."
+    REQUIRES
+        esp_wifi
+        esp_netif
+        esp_event
+        esp_timer
+        esp_http_server
+        app_update
+        esp_app_format
+        bootloader_support
+        mbedtls
+        nvs_flash
+        esp_driver_gpio
+        esp_hw_support
+        espressif__esp32-camera
+)

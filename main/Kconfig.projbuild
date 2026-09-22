@@ -1,0 +1,162 @@
+menu "AI Cam high-performance stream"
+
+    config AICAM_STREAM_WIFI_SSID_PREFIX
+        string "SoftAP SSID prefix"
+        default "AI_CAM"
+        help
+            The last three bytes of the SoftAP MAC are appended to this prefix.
+            Keep the prefix at 25 characters or fewer.
+
+    config AICAM_STREAM_WIFI_PASSWORD
+        string "SoftAP password"
+        default "12345678"
+        help
+            Use 8 to 63 characters. An empty value creates an open AP.
+
+    config AICAM_STREAM_WIFI_CHANNEL
+        int "SoftAP / ESP-NOW channel"
+        range 1 13
+        default 6
+
+    config AICAM_STREAM_WIFI_HT40
+        bool "Use 40 MHz Wi-Fi bandwidth"
+        default y
+        help
+            Improves peak throughput. Disable for clients that only connect reliably with HT20.
+
+    config AICAM_STREAM_DEFAULT_PROFILE
+        int "Default profile (0=max FPS, 1=balanced, 2=max resolution)"
+        range 0 2
+        default 1
+
+    config AICAM_STREAM_ROTATE_180
+        bool "Rotate camera image 180 degrees"
+        default y
+
+    config AICAM_STREAM_RECEIVER_MAC
+        string "Default ESP-NOW motor receiver MAC"
+        default "FF:FF:FF:FF:FF:FF"
+        help
+            Can be replaced at runtime with the SET_PEER control command.
+
+    config AICAM_STREAM_ESPNOW_PMK
+        string "ESP-NOW PMK (exactly 16 characters)"
+        default "pmk1234567890123"
+
+    config AICAM_STREAM_PAIR_BUTTON_GPIO
+        int "ESP-NOW pairing button GPIO"
+        range 0 48
+        default 39
+        help
+            Active-low button with an internal pull-up. Holding it requests a
+            safe reboot into the legacy receiver pairing channel. GPIO39 is
+            the verified AI Cam PCB v2 default; do not overlap camera or LED pins.
+
+    config AICAM_STREAM_PAIR_BUTTON_HOLD_MS
+        int "Pairing button hold time (ms)"
+        range 100 5000
+        default 500
+
+    config AICAM_STREAM_POWER_BUTTON_GPIO
+        int "Power / wake button GPIO"
+        range 0 21
+        default 2
+        help
+            Active-low RTC-capable button with an internal pull-up. Hold for
+            the configured interval and release to enter deep sleep. Pressing
+            it while asleep wakes the camera.
+
+    config AICAM_STREAM_POWER_BUTTON_HOLD_MS
+        int "Power-off button hold time (ms)"
+        range 1000 10000
+        default 3000
+
+    config AICAM_STREAM_AUTO_SLEEP_ENABLED
+        bool "Deep sleep when video streaming is inactive"
+        default y
+
+    config AICAM_STREAM_AUTO_SLEEP_TIMEOUT_MS
+        int "Video inactivity timeout (ms)"
+        depends on AICAM_STREAM_AUTO_SLEEP_ENABLED
+        range 10000 3600000
+        default 180000
+        help
+            Counts from boot or from the most recent completely transmitted
+            video frame. ESP-NOW heartbeat and motor traffic do not reset it.
+
+    config AICAM_STREAM_PAIRING_CHANNEL
+        int "Legacy ESP-NOW pairing channel"
+        range 1 13
+        default 13
+        help
+            The existing IQkey receiver advertises pairing packets on channel 13.
+
+    config AICAM_STREAM_PAIRING_TIMEOUT_MS
+        int "Pairing window (ms)"
+        range 5000 120000
+        default 30000
+
+    config AICAM_STREAM_ESPNOW_LINK_TIMEOUT_MS
+        int "Receiver heartbeat timeout (ms)"
+        range 1500 10000
+        default 2000
+        help
+            The receiver normally sends a heartbeat once per second. Two
+            seconds matches the legacy LED link-loss indication.
+
+    config AICAM_STREAM_RED_LED_GPIO
+        int "Existing-FW RED channel GPIO (active-high)"
+        range 0 48
+        default 46
+        help
+            Matches LED_RED_GPIO in the existing ai_cam firmware. This is the
+            code-level RED channel used for boot, ESP-NOW and pairing status.
+            GPIO46 is a strapping pin; external circuitry must not force an
+            incompatible level while the chip is reset.
+
+    config AICAM_STREAM_GREEN_LED_GPIO
+        int "Existing-FW GREEN channel GPIO (active-high)"
+        range 0 48
+        default 3
+        help
+            Matches LED_GREEN_GPIO in the existing ai_cam firmware. This is the
+            code-level GREEN channel used for motor transmission and detection.
+            GPIO3 is a strapping pin, so external circuitry must preserve the
+            required reset level.
+
+    config AICAM_STREAM_BOARD_LED_GPIO
+        int "XIAO user LED GPIO near charger (active-low)"
+        range 0 48
+        default 21
+        help
+            This output is not part of the existing firmware's RED/GREEN LED
+            controller and remains OFF. GPIO21 also served as speaker LRCLK in
+            the existing firmware; this streaming-only project keeps audio disabled.
+
+    config AICAM_STREAM_MOTOR_FAILSAFE_MS
+        int "Motor command failsafe timeout (ms)"
+        range 100 5000
+        default 300
+
+    config AICAM_OTA_ENABLED
+        bool "Enable Wi-Fi OTA update server"
+        default y
+        help
+            Starts an HTTP firmware upload endpoint on the camera SoftAP.
+            Streaming and motors are stopped before flash writing begins.
+
+    config AICAM_OTA_PORT
+        int "OTA HTTP port"
+        depends on AICAM_OTA_ENABLED
+        range 1024 65535
+        default 8080
+
+    config AICAM_OTA_KEY
+        string "OTA upload key"
+        depends on AICAM_OTA_ENABLED
+        default "aicamota"
+        help
+            Required in the X-AICam-OTA-Key request header. Use 8 to 63
+            visible ASCII characters and change the default before deployment.
+
+endmenu
