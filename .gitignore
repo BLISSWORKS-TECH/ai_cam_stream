@@ -12,4 +12,4 @@ dependencies.lock
 # Tool and OS noise
 *.log
 .DS_Store
-Thumbs.db
+Thumbs.db__pycache__/

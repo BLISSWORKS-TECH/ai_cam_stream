@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_rom_sys.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -43,6 +44,9 @@ constexpr char TAG[] = "camera_stream";
 constexpr uint32_t PROFILE_WARMUP_FRAMES = 2;
 constexpr uint32_t TX_PACING_INTERVAL_PACKETS = 16;
 constexpr uint32_t TX_PACING_US = 250;
+// If the sensor produces no frame for this long, treat it as stalled rather
+// than retrying forever; a stuck OV2640/SCCB bus does not self-recover.
+constexpr int64_t CAMERA_STALL_RECOVERY_US = 1000000;
 
 struct ProfileConfig {
     framesize_t frame_size;
@@ -158,6 +162,94 @@ esp_err_t apply_profile(StreamProfile profile)
     return ESP_OK;
 }
 
+camera_config_t build_camera_config()
+{
+    camera_config_t config{};
+    config.ledc_channel = LEDC_CHANNEL_0;
+    config.ledc_timer = LEDC_TIMER_0;
+    config.pin_d0 = PIN_D0;
+    config.pin_d1 = PIN_D1;
+    config.pin_d2 = PIN_D2;
+    config.pin_d3 = PIN_D3;
+    config.pin_d4 = PIN_D4;
+    config.pin_d5 = PIN_D5;
+    config.pin_d6 = PIN_D6;
+    config.pin_d7 = PIN_D7;
+    config.pin_xclk = PIN_XCLK;
+    config.pin_pclk = PIN_PCLK;
+    config.pin_vsync = PIN_VSYNC;
+    config.pin_href = PIN_HREF;
+    config.pin_sccb_sda = PIN_SIOD;
+    config.pin_sccb_scl = PIN_SIOC;
+    config.pin_pwdn = PIN_PWDN;
+    config.pin_reset = PIN_RESET;
+    config.xclk_freq_hz = 20000000;
+    config.pixel_format = PIXFORMAT_JPEG;
+
+    // Allocate for the largest profile once. Runtime changes only shrink or restore
+    // the sensor output, avoiding expensive camera driver reinitialization.
+    config.frame_size = FRAMESIZE_UXGA;
+    config.jpeg_quality = PROFILES[static_cast<uint8_t>(StreamProfile::MaxResolution)].jpeg_quality;
+    // Two buffers enable continuous JPEG capture while keeping only one queued
+    // frame in LATEST mode. A third buffer adds latency without helping control.
+    config.fb_count = 2;
+    config.fb_location = CAMERA_FB_IN_PSRAM;
+    config.grab_mode = CAMERA_GRAB_LATEST;
+    return config;
+}
+
+// Re-initializes the sensor after esp_camera_fb_get() has stopped producing
+// frames for CAMERA_STALL_RECOVERY_US. Runs on the stream task; no lock needed
+// around esp_camera_* calls since only this task touches the driver directly.
+bool recover_camera_after_stall()
+{
+    ESP_LOGE(TAG, "Camera capture stalled; re-initializing sensor");
+    esp_camera_deinit();
+    portENTER_CRITICAL(&s_lock);
+    s_camera_initialized = false;
+    portEXIT_CRITICAL(&s_lock);
+    gpio_hold_dis(PIN_PWDN);
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    camera_config_t config = build_camera_config();
+    const esp_err_t init_result = esp_camera_init(&config);
+    if (init_result != ESP_OK) {
+        ESP_LOGE(TAG, "Camera re-initialization failed: %s", esp_err_to_name(init_result));
+        return false;
+    }
+    portENTER_CRITICAL(&s_lock);
+    s_camera_initialized = true;
+    portEXIT_CRITICAL(&s_lock);
+
+    sensor_t *sensor = esp_camera_sensor_get();
+    if (!sensor) {
+        ESP_LOGE(TAG, "Camera re-initialized but sensor handle is unavailable");
+        return false;
+    }
+#if CONFIG_AICAM_STREAM_ROTATE_180
+    if (sensor->set_hmirror) {
+        sensor->set_hmirror(sensor, 1);
+    }
+    if (sensor->set_vflip) {
+        sensor->set_vflip(sensor, 1);
+    }
+#endif
+
+    uint8_t active_profile;
+    portENTER_CRITICAL(&s_lock);
+    active_profile = s_active_profile;
+    portEXIT_CRITICAL(&s_lock);
+    if (!valid_profile(active_profile)) {
+        active_profile = static_cast<uint8_t>(StreamProfile::Balanced);
+    }
+    if (apply_profile(static_cast<StreamProfile>(active_profile)) != ESP_OK) {
+        ESP_LOGE(TAG, "Camera re-initialized but failed to reapply the active profile");
+        return false;
+    }
+    ESP_LOGW(TAG, "Camera recovered after a capture stall");
+    return true;
+}
+
 int create_video_socket()
 {
     const int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
@@ -238,6 +330,9 @@ void stream_task(void *)
     int64_t stats_started_us = esp_timer_get_time();
     uint32_t stats_frames = 0;
     uint64_t stats_bytes = 0;
+    // 0 means capture is currently succeeding; otherwise holds the time the
+    // ongoing run of capture failures began.
+    int64_t capture_stall_since_us = 0;
 
     for (;;) {
         uint8_t requested;
@@ -287,9 +382,22 @@ void stream_task(void *)
         if (!fb) {
             ESP_LOGW(TAG, "Camera capture failed");
             update_drop_stats(false);
+            const int64_t now_us = esp_timer_get_time();
+            if (capture_stall_since_us == 0) {
+                capture_stall_since_us = now_us;
+            } else if (now_us - capture_stall_since_us >= CAMERA_STALL_RECOVERY_US) {
+                if (recover_camera_after_stall()) {
+                    capture_stall_since_us = 0;
+                } else {
+                    ESP_LOGE(TAG, "Camera recovery failed; rebooting");
+                    vTaskDelay(pdMS_TO_TICKS(250));
+                    esp_restart();
+                }
+            }
             vTaskDelay(pdMS_TO_TICKS(5));
             continue;
         }
+        capture_stall_since_us = 0;
 
         if (fb->format != PIXFORMAT_JPEG || !fb->buf || fb->len == 0 ||
             fb->len > VIDEO_FRAME_SIZE_MAX) {
@@ -455,37 +563,7 @@ esp_err_t camera_stream_init()
 {
     gpio_hold_dis(PIN_PWDN);
 
-    camera_config_t config{};
-    config.ledc_channel = LEDC_CHANNEL_0;
-    config.ledc_timer = LEDC_TIMER_0;
-    config.pin_d0 = PIN_D0;
-    config.pin_d1 = PIN_D1;
-    config.pin_d2 = PIN_D2;
-    config.pin_d3 = PIN_D3;
-    config.pin_d4 = PIN_D4;
-    config.pin_d5 = PIN_D5;
-    config.pin_d6 = PIN_D6;
-    config.pin_d7 = PIN_D7;
-    config.pin_xclk = PIN_XCLK;
-    config.pin_pclk = PIN_PCLK;
-    config.pin_vsync = PIN_VSYNC;
-    config.pin_href = PIN_HREF;
-    config.pin_sccb_sda = PIN_SIOD;
-    config.pin_sccb_scl = PIN_SIOC;
-    config.pin_pwdn = PIN_PWDN;
-    config.pin_reset = PIN_RESET;
-    config.xclk_freq_hz = 20000000;
-    config.pixel_format = PIXFORMAT_JPEG;
-
-    // Allocate for the largest profile once. Runtime changes only shrink or restore
-    // the sensor output, avoiding expensive camera driver reinitialization.
-    config.frame_size = FRAMESIZE_UXGA;
-    config.jpeg_quality = PROFILES[static_cast<uint8_t>(StreamProfile::MaxResolution)].jpeg_quality;
-    // Two buffers enable continuous JPEG capture while keeping only one queued
-    // frame in LATEST mode. A third buffer adds latency without helping control.
-    config.fb_count = 2;
-    config.fb_location = CAMERA_FB_IN_PSRAM;
-    config.grab_mode = CAMERA_GRAB_LATEST;
+    camera_config_t config = build_camera_config();
 
     const esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK) {

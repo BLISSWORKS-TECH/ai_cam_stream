@@ -87,15 +87,24 @@ void led_task(void *)
                 green_on = blink_on;
             }
         } else {
-            // RED and GREEN are independent code channels, matching ledAni.cpp
-            // in the existing firmware rather than combining them on one GPIO.
+            // GREEN carries the connection status: blinks at 1s while no
+            // streaming client is connected, solid on once one connects.
+            // RED stays off except for the special states below.
             const bool slow_blink_on =
                 (((now_us - state.slow_blink_started_us) / SLOW_HALF_PERIOD_US) & 1LL) != 0;
-            red_on = state.pairing || state.receiver_linked || slow_blink_on;
-            green_on = state.motor_active_until_us > now_us;
+            if (state.stream_connected) {
+                green_on = true;
+            } else {
+                green_on = slow_blink_on;
+                if (state.motor_active_until_us > now_us) {
+                    green_on = true;
+                }
+                if (state.detection_until_us > now_us) {
+                    green_on = fast_blink_on(now_us, state.detection_started_us);
+                }
+            }
 
-            // New OTA transport reuses the legacy RED status channel. Pairing
-            // success and errors also affect RED only, leaving GREEN independent.
+            red_on = state.pairing;
             if (state.ota_active) {
                 red_on = fast_blink_on(now_us, state.ota_started_us);
             } else if (state.pairing_success_until_us > now_us) {
@@ -103,10 +112,6 @@ void led_task(void *)
                     now_us, state.pairing_success_started_us);
             } else if (state.error_until_us > now_us) {
                 red_on = fast_blink_on(now_us, state.error_started_us);
-            }
-
-            if (state.detection_until_us > now_us) {
-                green_on = fast_blink_on(now_us, state.detection_started_us);
             }
         }
 
@@ -203,8 +208,7 @@ void status_led_set_pairing(bool active)
 
 void status_led_set_stream_connected(bool connected)
 {
-    // Stored for parity with the legacy UDP-client state. It intentionally
-    // does not participate in LED output selection.
+    // Drives GREEN solid-on while a streaming client is connected.
     portENTER_CRITICAL(&s_state_lock);
     s_state.stream_connected = connected;
     portEXIT_CRITICAL(&s_state_lock);
