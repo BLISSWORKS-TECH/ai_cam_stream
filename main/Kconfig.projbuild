@@ -107,22 +107,21 @@ menu "AI Cam high-performance stream"
     config AICAM_STREAM_RED_LED_GPIO
         int "Existing-FW RED channel GPIO (active-high)"
         range 0 48
-        default 46
+        default 3
         help
-            Matches LED_RED_GPIO in the existing ai_cam firmware. This is the
-            code-level RED channel used for boot, ESP-NOW and pairing status.
-            GPIO46 is a strapping pin; external circuitry must not force an
-            incompatible level while the chip is reset.
+            This PCB wires the code-level RED channel (boot, ESP-NOW and
+            pairing status) to GPIO3. GPIO3 is a strapping pin, so external
+            circuitry must preserve the required reset level.
 
     config AICAM_STREAM_GREEN_LED_GPIO
         int "Existing-FW GREEN channel GPIO (active-high)"
         range 0 48
-        default 3
+        default 46
         help
-            Matches LED_GREEN_GPIO in the existing ai_cam firmware. This is the
-            code-level GREEN channel used for motor transmission and detection.
-            GPIO3 is a strapping pin, so external circuitry must preserve the
-            required reset level.
+            This PCB wires the code-level GREEN channel (motor transmission
+            and detection) to GPIO46. GPIO46 is a strapping pin; external
+            circuitry must not force an incompatible level while the chip is
+            reset.
 
     config AICAM_STREAM_BOARD_LED_GPIO
         int "XIAO user LED GPIO near charger (active-low)"
